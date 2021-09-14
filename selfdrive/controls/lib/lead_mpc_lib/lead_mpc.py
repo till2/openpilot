@@ -16,8 +16,7 @@ LEAD_MPC_DIR = os.path.dirname(os.path.abspath(__file__))
 EXPORT_DIR = os.path.join(LEAD_MPC_DIR, "c_generated_code")
 JSON_FILE = "acados_ocp_lead.json"
 
-MPC_T = list(np.arange(0,1.,.2)) + list(np.arange(1.,10.6,.6))
-N = len(MPC_T) - 1
+N = len(T_IDXS) - 1
 
 
 def RW(v_ego, v_l):
@@ -61,8 +60,6 @@ def gen_lead_model():
 def gen_lead_mpc_solver():
   ocp = AcadosOcp()
   ocp.model = gen_lead_model()
-
-  Tf = np.array(MPC_T)[-1]
 
   # set dimensions
   ocp.dims.N = N
@@ -122,8 +119,8 @@ def gen_lead_mpc_solver():
   #ocp.solver_options.qp_tol = 1e-3
 
   # set prediction horizon
-  ocp.solver_options.tf = Tf
-  ocp.solver_options.shooting_nodes = np.array(MPC_T)
+  ocp.solver_options.tf = T_IDXS[-1]
+  ocp.solver_options.shooting_nodes = np.array(T_IDXS)
 
   ocp.code_export_directory = EXPORT_DIR
   return ocp
@@ -172,35 +169,33 @@ class LeadMpc():
     self.x0[2] = a
 
   def extrapolate_lead(self, x_lead, v_lead, a_lead_0, a_lead_tau):
-    dt =.2
     t = .0
-    for i in range(N+1):
-      if i > 4:
-        dt = .6
-      self.lead_xv[i, 0], self.lead_xv[i, 1] = x_lead, v_lead
+    self.lead_xv[0, 0], self.lead_xv[0, 1] = x_lead, v_lead
+    for i in range(1, N+1):
+      dt = T_IDXS[i] - T_IDXS[i-1]
       a_lead = a_lead_0 * math.exp(-a_lead_tau * (t**2)/2.)
       x_lead += v_lead * dt
       v_lead += a_lead * dt
       if v_lead < 0.0:
         a_lead = 0.0
         v_lead = 0.0
+      self.lead_xv[i, 0], self.lead_xv[i, 1] = x_lead, v_lead
       t += dt
 
   def init_with_sim(self, v_ego, lead_xv, a_lead_0):
     a_ego = min(0.0, -(v_ego - lead_xv[0,1]) * (v_ego - lead_xv[0,1]) / (2.0 * lead_xv[0,0] + 0.01) + a_lead_0)
-    dt =.2
     t = .0
     x_ego = 0.0
-    for i in range(N+1):
-      if i > 4:
-        dt = .6
+    self.solver.set(0, 'x', np.array([x_ego, v_ego, a_ego]))
+    for i in range(1, N+1):
+      dt = T_IDXS[i] - T_IDXS[i-1]
       v_ego += a_ego * dt
       if v_ego <= 0.0:
         v_ego = 0.0
         a_ego = 0.0
       x_ego += v_ego * dt
-      t += dt
       self.solver.set(i, 'x', np.array([x_ego, v_ego, a_ego]))
+      t += dt
 
   def update(self, carstate, radarstate, v_cruise):
     v_ego = carstate.vEgo
@@ -245,9 +240,9 @@ class LeadMpc():
     self.solver.fill_in_slice(0, N, 'u', self.u_sol)
     #self.solver.print_statistics()
 
-    self.v_solution = np.interp(T_IDXS[:CONTROL_N], MPC_T, list(self.x_sol[:,1]))
-    self.a_solution = np.interp(T_IDXS[:CONTROL_N], MPC_T, list(self.x_sol[:,2]))
-    self.j_solution = np.interp(T_IDXS[:CONTROL_N], MPC_T[:-1], list(self.u_sol[:,0]))
+    self.v_solution = list(self.x_sol[:CONTROL_N,1])
+    self.a_solution = list(self.x_sol[:CONTROL_N,2])
+    self.j_solution = list(self.u_sol[:CONTROL_N,0])
 
     # Reset if goes through lead car
     crashing = np.sum(self.lead_xv[:,0] - self.x_sol[:,0] < 0) > 0
